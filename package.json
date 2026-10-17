@@ -1,0 +1,17 @@
+{
+  "name": "pero",
+  "version": "1.0.0",
+  "description": "Перо — локальная мастерская короткого рассказа: команда ИИ-агентов пишет рассказ через OpenRouter",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js --open",
+    "serve": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test"
+  }
+}
