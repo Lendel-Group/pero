@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { REPLIES, startApp, startMockOpenRouter } from "./helpers.js";
+import { REPLIES, contentText, startApp, startMockOpenRouter } from "./helpers.js";
 
 const KEY = "sk-or-test-key-123456";
 
@@ -56,12 +56,12 @@ describe("HTTP API и конвейер агентов", () => {
   it("хранит ключ, но отдаёт только маску", async () => {
     let res = await app.api("GET", "/api/settings");
     assert.equal(res.body.hasKey, false);
-    res = await app.api("PUT", "/api/settings", { apiKey: KEY, defaultModel: "test/model", roleModels: { beta: "test/model" } });
+    res = await app.api("PUT", "/api/settings", { apiKey: KEY, defaultModel: "test/model", roleModels: { critic: "test/model" } });
     assert.equal(res.status, 200);
     assert.equal(res.body.hasKey, true);
     assert.equal(res.body.keySource, "settings");
     assert.ok(!JSON.stringify(res.body).includes(KEY));
-    assert.equal(res.body.roleModels.beta, "test/model");
+    assert.equal(res.body.roleModels.critic, "test/model");
     const raw = JSON.parse(await fs.readFile(path.join(app.dataDir, "settings.json"), "utf8"));
     assert.equal(raw.apiKey, KEY);
     res = await app.api("PUT", "/api/settings", { defaultModel: "не модель" });
@@ -135,7 +135,7 @@ describe("HTTP API и конвейер агентов", () => {
       assert.ok(types.includes("delta"), "писатель и редактор транслируются потоком");
       assert.ok(types.includes("reset"));
       const agents = result.events.filter((e) => e.type === "agent" && e.status === "start").map((e) => e.agent);
-      assert.deepEqual(agents.sort(), ["beta", "continuity", "editor", "writer"]);
+      assert.deepEqual(agents.sort(), ["critic", "editor", "writer"], "канон и бета-ридер — один вызов критика");
     }
     story = result.done.story;
     assert.equal(story.status, "COMPLETED");
@@ -144,18 +144,34 @@ describe("HTTP API и конвейер агентов", () => {
     assert.equal(story.scenes[0].continuity.issues.length, 1);
     assert.equal(story.scenes[0].beta.score, 6);
 
-    // Писатель получил промпт второго голоса и лорбук.
-    const writerCall = mock.calls.find((c) => c.body?.messages?.[0].content.startsWith("Ты — писатель"));
-    assert.match(writerCall.body.messages[0].content, /ВТОРОЙ ГОЛОС/);
-    assert.match(writerCall.body.messages[1].content, /Тринадцать ступенек/);
-    // Писатель закреплён за Claude, проверки — на Gemini Flash, независимо от defaultModel.
+    // Писатель получил промпт второго голоса, а лорбук — в библии, первым блоком с меткой кэша.
+    const systemOf = (call) => contentText(call.body.messages[0].content);
+    const writerCall = mock.calls.find((c) => c.body?.messages && systemOf(c).includes("Ты — писатель"));
+    const [bibleBlock, roleBlock] = writerCall.body.messages[0].content;
+    assert.match(bibleBlock.text, /^Библия истории:/);
+    assert.match(bibleBlock.text, /Тринадцать ступенек/);
+    assert.deepEqual(bibleBlock.cache_control, { type: "ephemeral" });
+    assert.match(roleBlock.text, /ВТОРОЙ ГОЛОС/);
+    assert.ok(!writerCall.body.messages[1].content.includes("Тринадцать ступенек"), "библия не дублируется в user");
+    // Писатель закреплён за Claude у провайдера Anthropic, проверки — на Gemini Flash.
     assert.equal(writerCall.body.model, "anthropic/claude-sonnet-5.5");
-    const continuityCall = mock.calls.find((c) => c.body?.messages?.[0].content.startsWith("Ты — хранитель канона"));
-    assert.equal(continuityCall.body.model, "google/gemini-3.8-flash");
+    assert.deepEqual(writerCall.body.provider, { order: ["anthropic"], allow_fallbacks: true });
+    assert.deepEqual(writerCall.body.reasoning, { effort: "medium" });
+    const criticCall = mock.calls.find((c) => c.body?.messages && systemOf(c).includes("Ты — критик сцены"));
+    assert.equal(criticCall.body.model, "test/model", "модель из настроек важнее модели роли по умолчанию");
+    assert.equal(typeof criticCall.body.messages[0].content, "string", "метка кэша — только для Anthropic");
+    assert.equal(criticCall.body.provider, undefined);
+    assert.equal(criticCall.body.reasoning, undefined, "test/model не заявляет поддержку reasoning");
     assert.equal(writerCall.auth, `Bearer ${KEY}`);
 
     result = await app.run(story.id, "review");
     assert.equal(result.done.story.review.score, 8);
+    assert.deepEqual(result.done.story.suggestions.map((s) => s.name), ["Ключ от чердака"], "архивариус отработал в том же вызове");
+    assert.equal(result.events.filter((e) => e.type === "agent" && e.status === "start").length, 1);
+    const reviewerCall = mock.calls.find((c) => c.body?.messages && systemOf(c).includes("Ты — литературный критик"));
+    assert.equal(reviewerCall.body.model, "google/gemini-3.8-flash");
+    assert.match(reviewerCall.body.messages[0].content, /^Библия истории:/);
+    assert.deepEqual(reviewerCall.body.reasoning, { effort: "low" });
 
     result = await app.run(story.id, "lore");
     const suggestions = result.done.story.suggestions;
@@ -168,6 +184,8 @@ describe("HTTP API и конвейер агентов", () => {
 
     assert.ok(story.usage.calls >= 15);
     assert.ok(story.usage.cost > 0);
+    assert.equal(story.usage.cachedTokens, story.usage.calls * 40);
+    assert.equal(story.usage.reasoningTokens, story.usage.calls * 10);
 
     const md = await fetch(`${app.base}/api/stories/${story.id}/export?format=md`);
     assert.equal(md.status, 200);

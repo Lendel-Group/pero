@@ -63,6 +63,7 @@ export function createApp({
   fetchImpl = globalThis.fetch,
   env = process.env,
   allowAnyHost = false,
+  log = console.info,
 } = {}) {
   const settingsStore = new JsonFile(path.join(dataDir, "settings.json"), defaultSettings());
   const library = new JsonFile(path.join(dataDir, "library.json"), emptyLibrary());
@@ -240,6 +241,7 @@ export function createApp({
       const agent = AGENTS[agentId];
       const role = agentId === "writer" ? "writer" : agent.modelRole;
       const model = modelFor(settings, role);
+      const anthropic = model.startsWith("anthropic/");
       const name = options.label ?? agent?.name ?? agentId;
       emit({ type: "agent", agent: agentId, name, model, status: "start" });
       let chars = 0;
@@ -247,11 +249,14 @@ export function createApp({
       const result = await client.chat({
         model,
         messages: [
-          { role: "system", content: options.system ?? agent.system },
+          { role: "system", content: systemContent(options.system ?? agent.system, options.bible, anthropic) },
           { role: "user", content: options.user },
         ],
         temperature: options.temperature ?? agent?.temperature,
         topP: options.topP,
+        reasoning: options.reasoning ?? agent?.reasoning,
+        // Кэш Anthropic живёт у конкретного провайдера: держимся его, пока он доступен.
+        provider: anthropic ? ANTHROPIC_PROVIDER : undefined,
         maxTokens: options.maxTokens ?? agent?.maxTokens ?? 3000,
         json: options.json,
         signal,
@@ -266,6 +271,7 @@ export function createApp({
         },
       });
       usage.push(result.usage);
+      log?.(usageLine(name, result.model, result.usage));
       emit({ type: "agent", agent: agentId, name, model: result.model, status: "done", usage: result.usage, finish: result.finish });
       if (result.finish === "length" && !options.json) {
         emit({ type: "notice", message: `${name}: ответ упёрся в лимит токенов и мог оборваться.` });
@@ -337,6 +343,27 @@ export function createApp({
   });
 
   return { server, stores: { settings: settingsStore, library } };
+}
+
+const ANTHROPIC_PROVIDER = { order: ["anthropic"], allow_fallbacks: true };
+
+/**
+ * Библия идёт первым блоком системного промпта — это общее начало запросов
+ * всех ролей, и провайдер отдаёт его из кэша. Anthropic кэширует только по
+ * явной метке; Gemini и прочие находят общее начало сами.
+ */
+export function systemContent(system, bible, anthropic) {
+  if (!bible) return system;
+  const head = `Библия истории:\n${bible}`;
+  if (!anthropic) return `${head}\n\n${system}`;
+  return [
+    { type: "text", text: head, cache_control: { type: "ephemeral" } },
+    { type: "text", text: system },
+  ];
+}
+
+export function usageLine(name, model, u) {
+  return `[pero] ${name} · ${model} · вход ${u.promptTokens} (из кэша ${u.cachedTokens}) · выход ${u.completionTokens} (рассуждение ${u.reasoningTokens}) · $${u.cost.toFixed(4)}`;
 }
 
 function applyResult(story, result) {

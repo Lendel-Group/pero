@@ -34,15 +34,33 @@ describe("клиент OpenRouter", () => {
       fetchImpl: async () =>
         sseResponse([
           'data: {"choices":[{"delta":{"content":"При"}}]}\n\n',
-          'data: {"choices":[{"delta":{"content":"вет"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"cost":0.5}}\n\n',
+          'data: {"choices":[{"delta":{"content":"вет"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"cost":0.5,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":1}}}\n\n',
           "data: [DONE]\n\n",
         ]),
     });
     const res = await client.chat({ model: "m", messages: [], maxTokens: 10, onDelta: (t) => pieces.push(t) });
     assert.equal(res.text, "Привет");
     assert.deepEqual(pieces, ["При", "вет"]);
-    assert.deepEqual(res.usage, { promptTokens: 3, completionTokens: 2, cost: 0.5 });
+    assert.deepEqual(res.usage, { promptTokens: 3, completionTokens: 2, cachedTokens: 1, reasoningTokens: 1, cost: 0.5 });
     assert.equal(res.finish, "stop");
+  });
+
+  it("передаёт reasoning и provider, если модель их принимает", async () => {
+    const bodies = [];
+    const client = createOpenRouter({
+      ...base,
+      fetchImpl: async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return Response.json({ choices: [{ message: { content: "ok" } }] });
+      },
+    });
+    const provider = { order: ["anthropic"], allow_fallbacks: true };
+    await client.chat({ model: "m", messages: [], maxTokens: 5, reasoning: { effort: "low" }, provider });
+    await client.chat({ model: "m", messages: [], maxTokens: 5, reasoning: { effort: "low" }, supports: (p) => p !== "reasoning" });
+    assert.deepEqual(bodies[0].reasoning, { effort: "low" });
+    assert.deepEqual(bodies[0].provider, provider);
+    assert.equal(bodies[1].reasoning, undefined, "без поддержки reasoning не отправляем");
+    assert.equal(bodies[1].provider, undefined);
   });
 
   it("повторяет при 503 и сдаётся с понятной ошибкой на 402", async () => {

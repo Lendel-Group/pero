@@ -34,7 +34,7 @@ export function createOpenRouter({ baseUrl, getKey, fetchImpl = globalThis.fetch
    * приходят по мере генерации. Повторяет запрос при 429/5xx и сетевых
    * сбоях, но только пока не пришло ни одного куска текста.
    */
-  async function chat({ model, messages, temperature, topP, maxTokens, json = false, signal, onDelta, supports }) {
+  async function chat({ model, messages, temperature, topP, maxTokens, reasoning, provider, json = false, signal, onDelta, supports }) {
     const can = (param) => (supports ? supports(param) : true);
     const body = {
       model,
@@ -46,6 +46,8 @@ export function createOpenRouter({ baseUrl, getKey, fetchImpl = globalThis.fetch
     if (temperature !== undefined && can("temperature")) body.temperature = temperature;
     if (topP !== undefined && can("top_p")) body.top_p = topP;
     if (json && can("response_format")) body.response_format = { type: "json_object" };
+    if (reasoning && can("reasoning")) body.reasoning = reasoning;
+    if (provider) body.provider = provider;
 
     let lastError;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
@@ -203,10 +205,13 @@ function contentText(content) {
 }
 
 function normalizeUsage(usage) {
-  if (!usage) return { promptTokens: 0, completionTokens: 0, cost: 0 };
+  if (!usage) return { promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cost: 0 };
   return {
     promptTokens: num(usage.prompt_tokens) ?? 0,
     completionTokens: num(usage.completion_tokens) ?? 0,
+    // Входящие токены, прочитанные из кэша провайдера, и скрытые токены рассуждения (входят в completionTokens).
+    cachedTokens: num(usage.prompt_tokens_details?.cached_tokens) ?? 0,
+    reasoningTokens: num(usage.completion_tokens_details?.reasoning_tokens) ?? 0,
     cost: num(usage.cost) ?? 0,
   };
 }

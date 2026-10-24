@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { LORE_TYPES, lengthFor, sceneCountFor } from "../shared/catalog.js";
 import { synthesizeWriter } from "../shared/orchestrator.js";
 import { stepIssues } from "../shared/story.js";
-import { AGENTS } from "./agents.js";
+import { AGENTS, WRITER_REASONING } from "./agents.js";
 import { HttpError, cleanConcept, cleanOutline } from "./library.js";
 import * as P from "./prompts.js";
 
@@ -62,12 +62,14 @@ async function outline({ story, project, llm, input }) {
   ensureStep(story, 4);
   const count = sceneCountFor(story.wizard.pacing);
   const useAudit = Boolean(input?.useAudit && story.audit?.issues?.length);
-  const user = P.outlinePrompt(story, project, { audit: useAudit ? story.audit : null });
-  let data = await llm.json("architect", { user });
+  const bible = P.bible(story, project);
+  const user = P.outlinePrompt(story, { audit: useAudit ? story.audit : null });
+  let data = await llm.json("architect", { bible, user });
   let scenes = Array.isArray(data.scenes) ? data.scenes : [];
   if (scenes.length !== count) {
     // Одна попытка исправиться: модели нередко теряют сцену.
     data = await llm.json("architect", {
+      bible,
       user: `${user}\n\nВ прошлый раз в плане было ${scenes.length} сцен вместо ${count}. Верни ровно ${count}.`,
     });
     scenes = Array.isArray(data.scenes) ? data.scenes : [];
@@ -85,7 +87,7 @@ async function outline({ story, project, llm, input }) {
 
 async function audit({ story, project, llm }) {
   ensureStep(story, 6);
-  const data = await llm.json("auditor", { user: P.auditPrompt(story, project) });
+  const data = await llm.json("auditor", { bible: P.bible(story, project), user: P.auditPrompt(story) });
   return { audit: cleanAudit(data, story.outline.length) };
 }
 
@@ -109,14 +111,18 @@ async function card({ story, project, llm, input }) {
   const n = Number(input?.n);
   const current = story.outline.find((item) => item.n === n);
   if (!current) throw new HttpError(404, "Сцена не найдена.");
-  const data = await llm.json("architect", { user: P.cardPrompt(story, project, n, input?.instruction), temperature: 0.8 });
+  const data = await llm.json("architect", {
+    bible: P.bible(story, project),
+    user: P.cardPrompt(story, n, input?.instruction),
+    temperature: 0.8,
+  });
   const [next] = cleanOutline([{ ...data, writer: current.writer }], story.wizard);
   if (!next?.title || !next.summary) throw new HttpError(502, "Карточка пришла пустой. Попробуйте ещё раз.");
   const outline = story.outline.map((item) => (item.n === n ? { ...next, n } : item));
   return { outline, audit: null };
 }
 
-// ── Сцена: писатель → канон ∥ бета → редактор ───────────────
+// ── Сцена: писатель → критик (канон + бета) → редактор ──────
 
 async function scene({ story, project, llm, emit, settings, input }) {
   ensureStep(story, 6);
@@ -139,25 +145,32 @@ async function scene({ story, project, llm, emit, settings, input }) {
     secondary: synth.secondary ? { name: synth.secondary.name, weight: synth.secondaryWeight } : null,
   });
 
+  const bible = P.bible(story, project);
   const draftText = await llm.text("writer", {
+    bible,
     system: synth.system,
-    user: P.writerPrompt(story, project, n),
+    user: P.writerPrompt(story, n),
     temperature: synth.temperature,
     topP: synth.topP,
+    reasoning: WRITER_REASONING,
     maxTokens: length.maxTokens,
     label: `Писатель «${synth.primary.name}»`,
   });
   const draft = cleanProse(draftText);
   if (draft.length < 200) throw new HttpError(502, "Сцена вышла слишком короткой. Попробуйте ещё раз.");
 
-  const [continuity, beta] = await Promise.all([
-    settings.agents.continuity !== false
-      ? llm.json("continuity", { user: P.continuityPrompt(story, project, n, draft) }).then(cleanContinuity, softFail(emit, "continuity"))
-      : null,
-    settings.agents.beta !== false
-      ? llm.json("beta", { user: P.betaPrompt(story, n, draft, synth) }).then(cleanBeta, softFail(emit, "beta"))
-      : null,
-  ]);
+  // Хранитель канона и бета-ридер — один вызов критика; переключатели решают, какие половины нужны.
+  const canon = settings.agents.continuity !== false;
+  const reader = settings.agents.beta !== false;
+  let continuity = null;
+  let beta = null;
+  if (canon || reader) {
+    const critique = await llm
+      .json("critic", { bible: canon ? bible : undefined, user: P.criticPrompt(story, n, draft, synth, { canon, reader }) })
+      .catch(softFail(emit, "critic"));
+    if (critique && canon) continuity = cleanContinuity(critique);
+    if (critique && reader) beta = cleanBeta(critique);
+  }
   if (continuity) emit({ type: "review", agent: "continuity", data: continuity });
   if (beta) emit({ type: "review", agent: "beta", data: beta });
 
@@ -236,13 +249,14 @@ export function cleanProse(raw) {
   return textValue.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// ── Рецензент ────────────────────────────────────────────────
+// ── Рецензент (+ архивариус тем же вызовом) ──────────────────
 
-async function review({ story, project, llm }) {
+async function review({ story, project, llm, settings }) {
   requireComplete(story);
-  const data = await llm.json("reviewer", { user: P.reviewPrompt(story, project) });
+  const known = settings.agents.lore !== false ? knownNames(story, project) : null;
+  const data = await llm.json("reviewer", { bible: P.bible(story, project), user: P.reviewPrompt(story, known) });
   const list = (value, max, len) => (Array.isArray(value) ? value : []).slice(0, max).map((s) => P.clip(s, len)).filter(Boolean);
-  return {
+  const result = {
     review: {
       score: score(data?.score),
       summary: P.clip(data?.summary, 1200),
@@ -255,19 +269,26 @@ async function review({ story, project, llm }) {
       at: new Date().toISOString(),
     },
   };
+  if (known) result.suggestions = cleanSuggestions(data?.lore, known);
+  return result;
 }
 
-// ── Архивариус ───────────────────────────────────────────────
+// ── Архивариус отдельно: повторный поиск без новой рецензии ──
 
 async function lore({ story, project, llm }) {
   requireComplete(story);
-  const known = [
-    ...(project?.lore ?? []).map((item) => item.name),
-    ...story.wizard.guests.map((guest) => guest.name),
-  ];
+  const known = knownNames(story, project);
   const data = await llm.json("lore", { user: P.lorePrompt(story, project, known) });
+  return { suggestions: cleanSuggestions(data?.suggestions, known) };
+}
+
+function knownNames(story, project) {
+  return [...(project?.lore ?? []).map((item) => item.name), ...story.wizard.guests.map((guest) => guest.name)];
+}
+
+function cleanSuggestions(items, known) {
   const lowerKnown = new Set(known.map((item) => item.toLowerCase()));
-  const suggestions = (Array.isArray(data?.suggestions) ? data.suggestions : [])
+  return (Array.isArray(items) ? items : [])
     .slice(0, 6)
     .map((item) => ({
       id: randomUUID(),
@@ -277,7 +298,6 @@ async function lore({ story, project, llm }) {
       accepted: false,
     }))
     .filter((item) => item.name && item.description && !lowerKnown.has(item.name.toLowerCase()));
-  return { suggestions };
 }
 
 function requireComplete(story) {

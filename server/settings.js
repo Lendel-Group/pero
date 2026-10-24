@@ -12,8 +12,7 @@ const FLASH = "google/gemini-3.8-flash";
 export const DEFAULT_ROLE_MODELS = {
   writer: DEFAULT_MODEL,
   auditor: FLASH,
-  continuity: FLASH,
-  beta: FLASH,
+  critic: FLASH,
   reviewer: FLASH,
   lore: FLASH,
 };
