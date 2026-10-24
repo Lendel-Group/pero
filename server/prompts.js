@@ -216,7 +216,7 @@ export function editorPrompt(story, n, draft, synth, { continuity, beta }) {
     synth.secondary ? `Второй голос: «${synth.secondary.name}», ${synth.secondaryWeight}%.` : "Второго голоса нет.",
     `Точка зрения: ${name(POV, story.wizard.pov)}. Тон: ${story.wizard.tone}.`,
     previous ? `Конец предыдущей сцены:\n${tail(previous.content, 1200)}` : "Это первая сцена.",
-    notes.length ? notes.join("\n\n") : "Замечаний нет — сделай лёгкую стилистическую вычитку.",
+    notes.length ? notes.join("\n\n") : "Замечаний нет — поправь только явные штампы и повторы, если они есть.",
     `Черновик сцены ${n}:\n${draft}`,
   ].join("\n\n");
 }

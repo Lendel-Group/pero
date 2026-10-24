@@ -132,8 +132,8 @@ describe("HTTP API и конвейер агентов", () => {
       result = await app.run(story.id, "scene", { n });
       assert.ok(result.done, JSON.stringify(result.error));
       const types = result.events.map((e) => e.type);
-      assert.ok(types.includes("delta"), "писатель и редактор транслируются потоком");
-      assert.ok(types.includes("reset"));
+      assert.ok(types.includes("delta"), "писатель транслируется потоком");
+      assert.ok(result.events.some((e) => e.type === "notice" && /пропущено правок/.test(e.message)));
       const agents = result.events.filter((e) => e.type === "agent" && e.status === "start").map((e) => e.agent);
       assert.deepEqual(agents.sort(), ["critic", "editor", "writer"], "канон и бета-ридер — один вызов критика");
     }
@@ -234,6 +234,26 @@ describe("сбои модели", () => {
       assert.ok(result.done);
       assert.equal(result.done.story.scenes[0].status, "DRAFTED");
       assert.ok(result.events.some((e) => e.type === "notice" && /Редактор не ответил/.test(e.message)));
+    } finally {
+      await app.close();
+      await mock.close();
+    }
+  });
+
+  it("не зовёт редактора, если нестыковок нет и бета-ридер доволен", async () => {
+    const mock = await startMockOpenRouter({ critic: () => ({ issues: [], score: 9, strengths: ["ритм"], notes: [] }) });
+    const app = await startApp({ openrouterBase: mock.url, env: { OPENROUTER_API_KEY: KEY } });
+    try {
+      let story = (await app.api("POST", "/api/stories", {})).body;
+      await app.api("PUT", `/api/stories/${story.id}`, { genreId: "dra" });
+      await app.api("PUT", `/api/stories/${story.id}`, {
+        wizard: { subgenres: [{ id: "dra-home", weight: 100 }], tone: "тёплый", pacing: "fast", conflict: "person", tropes: ["return"], premise: "Сын возвращается домой.", ending: "open" },
+      });
+      story = (await app.run(story.id, "outline")).done.story;
+      const result = await app.run(story.id, "scene", { n: 1 });
+      const agents = result.events.filter((e) => e.type === "agent" && e.status === "start").map((e) => e.agent);
+      assert.deepEqual(agents, ["writer", "critic"]);
+      assert.equal(result.done.story.scenes[0].status, "DRAFTED");
     } finally {
       await app.close();
       await mock.close();

@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { LORE_TYPES, lengthFor, sceneCountFor } from "../shared/catalog.js";
 import { synthesizeWriter } from "../shared/orchestrator.js";
 import { stepIssues } from "../shared/story.js";
-import { AGENTS, WRITER_REASONING } from "./agents.js";
+import { AGENTS, MAX_EDITS, WRITER_REASONING } from "./agents.js";
 import { HttpError, cleanConcept, cleanOutline } from "./library.js";
 import * as P from "./prompts.js";
 
@@ -176,19 +176,15 @@ async function scene({ story, project, llm, emit, settings, input }) {
 
   let content = draft;
   let edited = false;
-  if (settings.agents.editor !== false) {
+  if (settings.agents.editor !== false && needsEditor(continuity, beta)) {
     try {
-      emit({ type: "reset", n }); // браузер очищает поле и показывает поток редактора
-      const editedText = cleanProse(
-        await llm.text("editor", {
-          user: P.editorPrompt(story, n, draft, synth, { continuity, beta }),
-          maxTokens: length.maxTokens,
-        }),
-      );
-      if (editedText.length >= draft.length * 0.5) {
-        content = editedText;
+      const data = await llm.json("editor", { user: P.editorPrompt(story, n, draft, synth, { continuity, beta }) });
+      const result = applyEdits(draft, Array.isArray(data?.edits) ? data.edits.slice(0, MAX_EDITS) : []);
+      if (result.missed) emit({ type: "notice", message: `Редактор: пропущено правок, которых нет в черновике, — ${result.missed}.` });
+      if (result.applied && result.text.length >= draft.length * 0.5) {
+        content = cleanProse(result.text);
         edited = true;
-      } else {
+      } else if (result.applied) {
         emit({ type: "notice", message: "Редактор сократил сцену слишком сильно — оставлен черновик писателя." });
       }
     } catch (error) {
@@ -210,6 +206,42 @@ async function scene({ story, project, llm, emit, settings, input }) {
       updatedAt: new Date().toISOString(),
     },
   };
+}
+
+/** Оценка бета-ридера, с которой черновик без нестыковок уходит без редактора. */
+export const EDITOR_SKIP_SCORE = 8;
+
+/**
+ * Редактор нужен, если есть что исправлять. Без разбора критика (оба
+ * ревизора выключены или критик не ответил) судить не по чему — зовём.
+ */
+export function needsEditor(continuity, beta) {
+  if (continuity?.issues.length) return true;
+  if (!beta) return true;
+  return beta.score === null || beta.score < EDITOR_SKIP_SCORE;
+}
+
+/**
+ * Применяет правки редактора к черновику: каждая заменяет первое точное
+ * вхождение find. Ненайденные пропускаются и считаются в missed.
+ */
+export function applyEdits(text, edits) {
+  let result = text;
+  let applied = 0;
+  let missed = 0;
+  for (const edit of edits) {
+    const find = typeof edit?.find === "string" ? edit.find.trim() : "";
+    const replace = typeof edit?.replace === "string" ? edit.replace.trim() : null;
+    if (!find || replace === null || find === replace) continue;
+    const at = result.indexOf(find);
+    if (at < 0) {
+      missed += 1;
+      continue;
+    }
+    result = result.slice(0, at) + replace + result.slice(at + find.length);
+    applied += 1;
+  }
+  return { text: result, applied, missed };
 }
 
 function softFail(emit, agent) {

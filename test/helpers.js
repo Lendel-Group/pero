@@ -124,7 +124,7 @@ export const REPLIES = {
     strengths: ["атмосфера"],
     notes: [{ quote: "", issue: "мало действия", suggestion: "дать Марте поступок" }],
   }),
-  editor: () => PROSE.replace("двенадцать", "тринадцать"),
+  editor: () => ({ edits: [{ find: "двенадцать", replace: "тринадцать" }, { find: "чего нет в тексте", replace: "x" }] }),
   writer: () => PROSE,
   reviewer: () => ({
     score: 8,
