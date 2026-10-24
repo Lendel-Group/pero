@@ -148,7 +148,10 @@ describe("HTTP API и конвейер агентов", () => {
     const writerCall = mock.calls.find((c) => c.body?.messages?.[0].content.startsWith("Ты — писатель"));
     assert.match(writerCall.body.messages[0].content, /ВТОРОЙ ГОЛОС/);
     assert.match(writerCall.body.messages[1].content, /Тринадцать ступенек/);
-    assert.equal(writerCall.body.model, "test/model");
+    // Писатель закреплён за Claude, проверки — на Gemini Flash, независимо от defaultModel.
+    assert.equal(writerCall.body.model, "anthropic/claude-sonnet-5.5");
+    const continuityCall = mock.calls.find((c) => c.body?.messages?.[0].content.startsWith("Ты — хранитель канона"));
+    assert.equal(continuityCall.body.model, "google/gemini-3.8-flash");
     assert.equal(writerCall.auth, `Bearer ${KEY}`);
 
     result = await app.run(story.id, "review");
