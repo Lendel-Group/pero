@@ -5,7 +5,7 @@ import { pairBlock, pruneSelection, resolveCompatibility, selectionConflicts } f
 import { apportion, secondaryFor, synthesizeWriter } from "../shared/orchestrator.js";
 import { equalize, normalizeWeights, setVoiceWeight, toggleVoice, weightSum } from "../shared/weights.js";
 import { blankWizard, stepIssues } from "../shared/story.js";
-import { cleanProse, parseJsonReply } from "../server/pipeline.js";
+import { applyEdits, cleanProse, needsEditor, parseJsonReply } from "../server/pipeline.js";
 import { cleanOutline, cleanWizard } from "../server/library.js";
 
 const byId = (id) => SUBGENRES.find((s) => s.id === id);
@@ -153,5 +153,26 @@ describe("проверки и чистка ввода", () => {
     assert.equal(parseJsonReply("[1,2]"), null);
     assert.equal(cleanProse("```\nТекст\n```"), "Текст");
     assert.equal(cleanProse("## Сцена 2. Дом\n\nТекст сцены."), "Текст сцены.");
+  });
+});
+
+describe("точечные правки редактора", () => {
+  it("заменяет первое точное вхождение и считает ненайденные", () => {
+    const result = applyEdits("Раз, два. Раз, два.", [
+      { find: "два", replace: "три" },
+      { find: "нет такого", replace: "x" },
+      { find: "Раз", replace: "Раз" },
+      { find: "", replace: "x" },
+    ]);
+    assert.deepEqual(result, { text: "Раз, три. Раз, два.", applied: 1, missed: 1 });
+  });
+
+  it("зовёт редактора только когда есть что править", () => {
+    const clean = { issues: [] };
+    assert.equal(needsEditor(clean, { score: 9, notes: [] }), false);
+    assert.equal(needsEditor(clean, { score: 7, notes: [] }), true);
+    assert.equal(needsEditor({ issues: [{ problem: "имя" }] }, { score: 10, notes: [] }), true);
+    assert.equal(needsEditor(clean, null), true, "бета-ридер выключен — судить не по чему");
+    assert.equal(needsEditor(null, { score: 8, notes: [] }), false);
   });
 });

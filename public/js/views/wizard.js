@@ -11,8 +11,7 @@ const AGENT_LABEL = {
   architect: "Архитектор",
   auditor: "Сюжетный ревизор",
   writer: "Писатель",
-  continuity: "Хранитель канона",
-  beta: "Бета-ридер",
+  critic: "Критик сцены",
   editor: "Редактор",
   reviewer: "Рецензент",
   lore: "Архивариус",
@@ -114,8 +113,7 @@ export async function wizardView(root, [storyId], ctx) {
       writer: null,
       agents: {
         writer: "wait",
-        continuity: on.continuity ? "wait" : "off",
-        beta: on.beta ? "wait" : "off",
+        critic: on.continuity || on.beta ? "wait" : "off",
         editor: on.editor ? "wait" : "off",
       },
       continuity: null,
@@ -734,7 +732,7 @@ export async function wizardView(root, [storyId], ctx) {
     };
     const on = ctx.settings.agents;
     return [
-      stepHead("Рукопись", `Каждая сцена проходит конвейер: Писатель → ${[on.continuity && "Хранитель канона", on.beta && "Бета-ридер"].filter(Boolean).join(" и ") || "без ревизоров"} → ${on.editor ? "Редактор" : "без редактора"}.`),
+      stepHead("Рукопись", `Каждая сцена проходит конвейер: Писатель → ${on.continuity || on.beta ? `Критик сцены (${[on.continuity && "канон", on.beta && "бета-ридер"].filter(Boolean).join(" и ")})` : "без ревизоров"} → ${on.editor ? "Редактор" : "без редактора"}.`),
       h(
         "div",
         { class: "row" },
@@ -756,7 +754,7 @@ export async function wizardView(root, [storyId], ctx) {
 
     let body;
     if (isLive) {
-      const phase = agents.editor === "active" ? "Редактор правит сцену" : agents.writer === "active" ? `${live.writer?.writer ? `Писатель «${live.writer.writer}»` : "Писатель"} пишет` : agents.writer === "done" && agents.editor !== "done" ? "Ревизоры читают черновик" : "";
+      const phase = agents.editor === "active" ? "Редактор правит сцену" : agents.writer === "active" ? `${live.writer?.writer ? `Писатель «${live.writer.writer}»` : "Писатель"} пишет` : agents.writer === "done" && agents.editor !== "done" ? "Критик читает черновик" : "";
       body = h("div", { class: "live" }, h("p", { class: "live-phase small" }, phase), h("div", { class: "live-text", ref: (el) => (liveTextEl = el) }));
     } else if (editing) {
       body = h("textarea", {
@@ -814,18 +812,17 @@ export async function wizardView(root, [storyId], ctx) {
   }
 
   function sceneAgents(scene) {
-    if (!scene.content.trim()) return { writer: "wait", continuity: "wait", beta: "wait", editor: "wait" };
+    if (!scene.content.trim()) return { writer: "wait", critic: "wait", editor: "wait" };
     return {
       writer: "done",
-      continuity: scene.continuity ? "done" : "off",
-      beta: scene.beta ? "done" : "off",
+      critic: scene.continuity || scene.beta ? "done" : "off",
       editor: scene.status === "EDITED" ? "done" : "off",
     };
   }
 
   function pipeline(agents) {
     const chip = (key) => h("span", { class: `agent agent-${agents[key]}`, title: stateLabel(agents[key]) }, AGENT_LABEL[key]);
-    return h("ol", { class: "pipeline", "aria-label": "Конвейер агентов" }, h("li", null, chip("writer")), h("li", { class: "agent-pair" }, chip("continuity"), chip("beta")), h("li", null, chip("editor")));
+    return h("ol", { class: "pipeline", "aria-label": "Конвейер агентов" }, h("li", null, chip("writer")), h("li", null, chip("critic")), h("li", null, chip("editor")));
   }
 
   function reviews(continuity, beta, edited) {

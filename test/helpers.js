@@ -36,13 +36,19 @@ export async function startMockOpenRouter(overrides = {}, { delayMs = 0 } = {}) 
       return json(res, 200, { data: { label: "test", usage: 1.5, limit: 10, limit_remaining: 8.5 } });
     }
 
-    const system = body.messages[0].content;
-    const user = body.messages[1].content;
+    const system = contentText(body.messages[0].content);
+    const user = contentText(body.messages[1].content);
     const agent = detect(system);
     const reply = (overrides[agent] ?? REPLIES[agent])(user, body);
     if (reply.status) return json(res, reply.status, { error: { message: reply.message ?? "fail" } });
     const text = typeof reply === "string" ? reply : JSON.stringify(reply);
-    const usage = { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 };
+    const usage = {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      cost: 0.001,
+      prompt_tokens_details: { cached_tokens: 40 },
+      completion_tokens_details: { reasoning_tokens: 10 },
+    };
     if (!body.stream) {
       return json(res, 200, { model: body.model, choices: [{ message: { content: text }, finish_reason: "stop" }], usage });
     }
@@ -59,16 +65,22 @@ export async function startMockOpenRouter(overrides = {}, { delayMs = 0 } = {}) 
   return { url: `http://127.0.0.1:${server.address().port}`, calls, close: () => new Promise((r) => server.close(r)) };
 }
 
+/** Системный промпт бывает строкой или списком блоков (библия с меткой кэша + роль). */
+export function contentText(content) {
+  return Array.isArray(content) ? content.map((part) => part.text).join("\n\n") : content;
+}
+
+/** Роль — по первой строке после библии: библия стоит в начале системного промпта. */
 function detect(system) {
-  if (system.startsWith("Ты — идеолог")) return "concept";
-  if (system.startsWith("Ты — сюжетный архитектор")) return "architect";
-  if (system.startsWith("Ты — сюжетный ревизор")) return "auditor";
-  if (system.startsWith("Ты — хранитель канона")) return "continuity";
-  if (system.startsWith("Ты — опытный бета-ридер")) return "beta";
-  if (system.startsWith("Ты — литературный редактор")) return "editor";
-  if (system.startsWith("Ты — литературный критик")) return "reviewer";
-  if (system.startsWith("Ты — архивариус")) return "lore";
-  if (system.startsWith("Ты — писатель")) return "writer";
+  const has = (start) => system.startsWith(start) || system.includes(`\n\n${start}`);
+  if (has("Ты — идеолог")) return "concept";
+  if (has("Ты — сюжетный архитектор")) return "architect";
+  if (has("Ты — сюжетный ревизор")) return "auditor";
+  if (has("Ты — критик сцены")) return "critic";
+  if (has("Ты — литературный редактор")) return "editor";
+  if (has("Ты — литературный критик")) return "reviewer";
+  if (has("Ты — архивариус")) return "lore";
+  if (has("Ты — писатель")) return "writer";
   return "unknown";
 }
 
@@ -106,9 +118,13 @@ export const REPLIES = {
     };
   },
   auditor: () => ({ score: 7, verdict: "Крепко.", issues: [{ scene: 2, severity: "high", problem: "Провисает", fix: "Добавить угрозу" }] }),
-  continuity: () => ({ issues: [{ quote: "двенадцать", problem: "В лорбуке ступенек тринадцать", fix: "Заменить на тринадцать" }] }),
-  beta: () => ({ score: 6, strengths: ["атмосфера"], notes: [{ quote: "", issue: "мало действия", suggestion: "дать Марте поступок" }] }),
-  editor: () => PROSE.replace("двенадцать", "тринадцать"),
+  critic: () => ({
+    issues: [{ quote: "двенадцать", problem: "В лорбуке ступенек тринадцать", fix: "Заменить на тринадцать" }],
+    score: 6,
+    strengths: ["атмосфера"],
+    notes: [{ quote: "", issue: "мало действия", suggestion: "дать Марте поступок" }],
+  }),
+  editor: () => ({ edits: [{ find: "двенадцать", replace: "тринадцать" }, { find: "чего нет в тексте", replace: "x" }] }),
   writer: () => PROSE,
   reviewer: () => ({
     score: 8,
@@ -119,6 +135,7 @@ export const REPLIES = {
     suggestions: ["усилить"],
     titles: ["Ключ", "Тишина", "Дом"],
     blurb: "Марта находит ключ.",
+    lore: [{ type: "ITEM", name: "Ключ от чердака", description: "Ключ, который Марте не давали." }],
   }),
   lore: () => ({ suggestions: [{ type: "LOCATION", name: "Дом Вольских", description: "Старый дом." }, { type: "CHARACTER", name: "Марта", description: "уже известна" }] }),
   unknown: () => ({ status: 500 }),
@@ -131,7 +148,7 @@ function json(res, status, value) {
 
 export async function startApp(options = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "pero-test-"));
-  const { server } = createApp({ dataDir, env: {}, ...options });
+  const { server } = createApp({ dataDir, env: {}, log: null, ...options });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://localhost:${server.address().port}`;
   async function api(method, url, body) {

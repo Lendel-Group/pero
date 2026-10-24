@@ -2,11 +2,27 @@ import { AGENT_TOGGLES, MODEL_ROLES } from "./agents.js";
 
 export const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
 
+const FLASH = "google/gemini-3.8-flash";
+
+/**
+ * Модели ролей по умолчанию: проза — на Claude, проверки и разбор — на дешёвом Gemini Flash.
+ * Идеолог, архитектор и редактор идут на defaultModel; переключить их на Gemini можно
+ * в «Настройках» (google/gemini-3.1-pro-preview).
+ */
+export const DEFAULT_ROLE_MODELS = {
+  writer: DEFAULT_MODEL,
+  auditor: FLASH,
+  critic: FLASH,
+  reviewer: FLASH,
+  lore: FLASH,
+};
+
 export const MODEL_PRESETS = [
   { id: "anthropic/claude-opus-5.5", note: "Лучшая проза, дороже остальных" },
   { id: "anthropic/claude-sonnet-5.5", note: "Почти Opus по качеству, быстрее и дешевле" },
   { id: "openai/gpt-5.6-terra", note: "Плотный сюжет, хорошо держит структуру" },
   { id: "google/gemini-3.1-pro-preview", note: "Длинный контекст, ровный тон" },
+  { id: "google/gemini-3.8-flash", note: "Быстро и дёшево — для канона, критики и лора" },
   { id: "x-ai/grok-4.7", note: "Живой разговорный голос" },
   { id: "deepseek/deepseek-v4-pro", note: "Сильный текст за копейки" },
   { id: "moonshotai/kimi-k3", note: "Хорош в художественном тексте" },
@@ -32,7 +48,7 @@ export function resolveKey(settings, env = process.env) {
 }
 
 export function modelFor(settings, role) {
-  return settings.roleModels?.[role] || settings.defaultModel || DEFAULT_MODEL;
+  return settings.roleModels?.[role] || DEFAULT_ROLE_MODELS[role] || settings.defaultModel || DEFAULT_MODEL;
 }
 
 export function agentEnabled(settings, id) {
@@ -47,7 +63,7 @@ export function publicSettings(settings, env = process.env) {
     keySource: source,
     keyHint: key ? maskKey(key) : "",
     defaultModel: settings.defaultModel || DEFAULT_MODEL,
-    roleModels: { ...settings.roleModels },
+    roleModels: { ...DEFAULT_ROLE_MODELS, ...settings.roleModels },
     agents: { ...defaultSettings().agents, ...settings.agents },
   };
 }

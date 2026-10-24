@@ -135,7 +135,7 @@ export function createStory(lib, input) {
     scenes: [],
     review: null,
     suggestions: [],
-    usage: { promptTokens: 0, completionTokens: 0, cost: 0, calls: 0 },
+    usage: { promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cost: 0, calls: 0 },
     createdAt: now(),
     updatedAt: now(),
   };
@@ -328,6 +328,9 @@ export function addUsage(story, usage) {
   if (!usage) return;
   story.usage.promptTokens += usage.promptTokens || 0;
   story.usage.completionTokens += usage.completionTokens || 0;
+  // У рассказов, созданных до появления этих полей, их ещё нет.
+  story.usage.cachedTokens = (story.usage.cachedTokens || 0) + (usage.cachedTokens || 0);
+  story.usage.reasoningTokens = (story.usage.reasoningTokens || 0) + (usage.reasoningTokens || 0);
   story.usage.cost = Math.round((story.usage.cost + (usage.cost || 0)) * 1e6) / 1e6;
   story.usage.calls += 1;
 }

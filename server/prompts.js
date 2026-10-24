@@ -88,7 +88,11 @@ export function outlineBlock(outline) {
     .join("\n");
 }
 
-/** Библия истории — общий контекст для всех агентов после Идеолога. */
+/**
+ * Библия истории — общий контекст для всех агентов после Идеолога.
+ * Уходит не в user, а первым блоком системного промпта (см. makeLLM):
+ * одинаковое начало запроса у всех ролей провайдер берёт из кэша.
+ */
 export function bible(story, project) {
   return [
     story.title || story.wizard.title ? `Название: ${story.title || story.wizard.title}` : "",
@@ -113,7 +117,7 @@ export function conceptPrompt(story, project) {
     .join("\n\n");
 }
 
-export function outlinePrompt(story, project, { audit } = {}) {
+export function outlinePrompt(story, { audit } = {}) {
   const w = story.wizard;
   const count = sceneCountFor(w.pacing);
   const voices = w.subgenres
@@ -126,7 +130,6 @@ export function outlinePrompt(story, project, { audit } = {}) {
     .map((id, index) => `Сцена ${index + 1}: ${id}`)
     .join("\n");
   const parts = [
-    bible(story, project),
     `Доступные писатели (поле writer):\n${voices}`,
     `Черновая раскладка по весам:\n${draft}`,
     `Сцен должно быть ровно ${count}.`,
@@ -144,14 +147,13 @@ export function outlinePrompt(story, project, { audit } = {}) {
   return parts.join("\n\n");
 }
 
-export function auditPrompt(story, project) {
-  return [bible(story, project), `План:\n${outlineBlock(story.outline)}`, "Проведи ревизию плана."].join("\n\n");
+export function auditPrompt(story) {
+  return [`План:\n${outlineBlock(story.outline)}`, "Проведи ревизию плана."].join("\n\n");
 }
 
-export function cardPrompt(story, project, n, instruction) {
+export function cardPrompt(story, n, instruction) {
   const card = story.outline.find((item) => item.n === n);
   return [
-    bible(story, project),
     `Весь план:\n${outlineBlock(story.outline)}`,
     `Пересобери только сцену ${n} («${card.title}»), сохранив связь с соседними. Писатель сцены остаётся ${card.writer}.`,
     instruction ? `Пожелание автора: ${clip(instruction, 500)}` : "",
@@ -161,13 +163,12 @@ export function cardPrompt(story, project, n, instruction) {
     .join("\n\n");
 }
 
-export function writerPrompt(story, project, n) {
+export function writerPrompt(story, n) {
   const card = story.outline.find((item) => item.n === n);
   const previous = story.scenes.filter((scene) => scene.n < n && scene.content.trim());
   const last = previous[previous.length - 1];
   const earlier = previous.slice(0, -1);
   return [
-    bible(story, project),
     `План рассказа:\n${outlineBlock(story.outline)}`,
     earlier.length ? `Начало рассказа (сжато):\n${earlier.map((scene) => `[${scene.n}] ${clip(scene.content, 900)}`).join("\n")}` : "",
     last ? `Предыдущая сцена (${last.n}) — продолжай с её конца, не пересказывай:\n${tail(last.content, 3500)}` : "Это первая сцена рассказа.",
@@ -181,23 +182,24 @@ export function writerPrompt(story, project, n) {
     .join("\n\n");
 }
 
-export function continuityPrompt(story, project, n, draft) {
-  const previous = story.scenes.filter((scene) => scene.n < n && scene.content.trim());
-  return [
-    bible(story, project),
-    previous.length ? `Уже написано:\n${previous.map((scene) => `[Сцена ${scene.n}]\n${clip(scene.content, 4000)}`).join("\n\n")}` : "Это первая сцена, сверяй с библией.",
-    `Черновик сцены ${n}:\n${draft}`,
-  ].join("\n\n");
-}
-
-export function betaPrompt(story, n, draft, synth) {
+/**
+ * Критик сцены: канон и взгляд читателя одним запросом. Отключённую
+ * половину не просим — меньше и входа (прошлые сцены), и ответа.
+ */
+export function criticPrompt(story, n, draft, synth, { canon = true, reader = true } = {}) {
   const card = story.outline.find((item) => item.n === n);
+  const previous = story.scenes.filter((scene) => scene.n < n && scene.content.trim());
   return [
     `Рассказ: ${story.title || story.wizard.title || "без названия"}. Тон: ${story.wizard.tone}. Точка зрения: ${name(POV, story.wizard.pov)}.`,
     `Жанровый голос сцены: «${synth.primary.name}»${synth.secondary ? ` с примесью «${synth.secondary.name}» (${synth.secondaryWeight}%)` : ""}.`,
     `План сцены ${n}: «${card.title}». ${card.summary}${card.turn ? ` Поворот: ${card.turn}` : ""}`,
-    `Черновик:\n${draft}`,
-  ].join("\n\n");
+    canon && (previous.length ? `Уже написано:\n${previous.map((scene) => `[Сцена ${scene.n}]\n${clip(scene.content, 4000)}`).join("\n\n")}` : "Это первая сцена, сверяй с библией."),
+    !canon && "Канон не проверяй: issues — пустой список.",
+    !reader && "Читательский разбор не нужен: score — null, strengths и notes — пустые списки.",
+    `Черновик сцены ${n}:\n${draft}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function editorPrompt(story, n, draft, synth, { continuity, beta }) {
@@ -214,14 +216,17 @@ export function editorPrompt(story, n, draft, synth, { continuity, beta }) {
     synth.secondary ? `Второй голос: «${synth.secondary.name}», ${synth.secondaryWeight}%.` : "Второго голоса нет.",
     `Точка зрения: ${name(POV, story.wizard.pov)}. Тон: ${story.wizard.tone}.`,
     previous ? `Конец предыдущей сцены:\n${tail(previous.content, 1200)}` : "Это первая сцена.",
-    notes.length ? notes.join("\n\n") : "Замечаний нет — сделай лёгкую стилистическую вычитку.",
+    notes.length ? notes.join("\n\n") : "Замечаний нет — поправь только явные штампы и повторы, если они есть.",
     `Черновик сцены ${n}:\n${draft}`,
   ].join("\n\n");
 }
 
-export function reviewPrompt(story, project) {
+/** knownNames === null — архивариус отключён, сущности не ищем. */
+export function reviewPrompt(story, knownNames) {
   return [
-    bible(story, project),
+    knownNames
+      ? `Уже известные имена (их в lore не включай): ${knownNames.slice(0, 80).join(", ") || "нет"}.`
+      : "Сущности для лорбука искать не нужно: lore — пустой список.",
     `Рассказ целиком:\n\n${story.scenes.map((scene) => scene.content).join("\n\n* * *\n\n")}`,
   ].join("\n\n");
 }
